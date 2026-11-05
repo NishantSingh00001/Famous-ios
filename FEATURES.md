@@ -2,13 +2,13 @@
 
 ## Story selection
 
-1. 60 original story openings across music, style, startups, film, art, campus, sports, creator life, food, community, city, and science.
+1. 200 story setups total: 60 existing openings plus 140 additional distinct premises across 14 story worlds. Procedural covers are generated for each catalog entry; the full branch scripts are not individually authored for all 200.
 2. Search stories by title, category, or premise.
 3. Category filters with a visible selected state.
 4. Paginated story browsing.
 5. Story difficulty labels.
 6. Story premise previews before selection.
-7. A unique color/glyph accent per story card.
+7. A story-specific cover illustration, color, and glyph per story card.
 8. Per-story chapter context and story summary.
 
 ## Character and social identity
@@ -18,7 +18,7 @@
 11. Character initials avatar.
 12. Personal profile with posts, stats, badges, and settings tabs.
 13. Switch to a new story from the profile.
-14. Fictional cast directory with individual profiles and roles.
+14. Fictional 100,000-identity NPC roster generated lazily, with unique display names/handles, five-axis personality keys, story-bound roles, and distinct deterministic SVG portraits.
 15. Follow/connect with cast members.
 16. Friendship state and friend count.
 17. Story viewer for cast members.

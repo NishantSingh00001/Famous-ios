@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sanitizeSave, normalizeAccounts, escapeHTML, sortBoardItems, persistJSON, buildCommonsSearchUrl, normalizeCommonsResults, chooseVariant, uniqueMediaPool, fetchMediaResults, uniqueNpcName, buildNpcBio, buildNpcStoryTask, buildNpcPortraitDataUrl, filterCastForStory, buildStoryCatalog, selectFirstFollowerCandidates, buildStoryCoverDataUrl } from '../game-core.mjs';
+import { sanitizeSave, normalizeAccounts, escapeHTML, sortBoardItems, persistJSON, buildCommonsSearchUrl, normalizeCommonsResults, chooseVariant, uniqueMediaPool, fetchMediaResults, uniqueNpcName, buildNpcBio, buildNpcStoryTask, buildNpcPortraitDataUrl, filterCastForStory, buildStoryCatalog, selectFirstFollowerCandidates, buildStoryCoverDataUrl, buildStoryCoverPhotoUrl, selectNpcPersona, buildNpcSocialMoments, buildNpcPersonality } from '../game-core.mjs';
 
 const blank = {
   started: false,
@@ -62,6 +62,14 @@ test('valid restored gameplay fields survive sanitization while unsafe media URL
   assert.equal(safe.worldSequence, 82);
   assert.equal(safe.worldLastTick, 123456789);
   assert.deepEqual(safe.npcTasks, restored.npcTasks);
+});
+
+test('saves from the retired 1,060-world catalog retain their story metadata for app migration', () => {
+  const restored=structuredClone(blank);
+  restored.profile.name='Ari';restored.started=true;restored.story={id:999,title:'Old world 999',category:'music',summary:'Saved old story'};
+  const safe=sanitizeSave(restored,blank);
+  assert.equal(safe.story.id,999);
+  assert.equal(safe.story.category,'music');
 });
 
 test('5,001 virtual players retain separate story, feed, relationship, and message state', () => {
@@ -164,8 +172,18 @@ test('Explore video queries use a public video catalog directly', async () => {
   assert.match(called, /filetype%3Avideo/);
 });
 
-test('audio catalog errors remain explicit instead of pretending there is a Commons fallback', async () => {
-  await assert.rejects(fetchMediaResults(async () => ({ ok: false, status: 401, json: async () => ({}) }), 'ambient', { kind: 'audio' }), /401/);
+test('Explore falls back to Wikimedia Commons audio when Openverse rejects the request', async () => {
+  const calls=[];
+  const result=await fetchMediaResults(async url=>{
+    calls.push(String(url));
+    if(String(url).includes('api.openverse.org'))return {ok:false,status:401,json:async()=>({})};
+    return {ok:true,status:200,json:async()=>({query:{pages:{1:{title:'File:Ambient.mp3',imageinfo:[{url:'https://upload.wikimedia.org/ambient.mp3',mime:'audio/mpeg',descriptionurl:'https://commons.wikimedia.org/wiki/File:Ambient.mp3',extmetadata:{LicenseShortName:{value:'CC0'}}}]},2:{title:'File:Unsupported.ogg',imageinfo:[{url:'https://upload.wikimedia.org/unsupported.ogg',mime:'audio/ogg'}]}}}})};
+  },'ambient',{kind:'audio'});
+  assert.equal(result.source,'Wikimedia Commons');
+  assert.equal(result.results[0].mediaType,'audio');
+  assert.equal(result.results.length,1);
+  assert.equal(calls.length,2);
+  assert.match(calls[1],/filetype%3Aaudio/);
 });
 
 test('10,000 NPCs receive distinct natural names and story-specific biographies', () => {
@@ -182,6 +200,20 @@ test('10,000 NPCs receive distinct natural names and story-specific biographies'
   assert.match(bios[42], /Story 42/);
 });
 
+test('generated NPC middle names do not duplicate the first or family name', () => {
+  const first = ['Ari', 'Mina', 'Theo'];
+  const last = ['Sen', 'Vale', 'Park'];
+  const middle = ['Ari', 'Bea', 'Mina', 'Cai', 'Theo', 'Devi'];
+  for (let i = 0; i < 100; i++) {
+    const [given, second, family] = uniqueNpcName(i, first, last, middle).split(' ');
+    assert.notEqual(given, second);
+    assert.notEqual(second, family);
+  }
+  const bio = buildNpcBio({ storyTitle: 'Film Nights', persona: 'the quiet observer', goal: 'notices small details' });
+  assert.match(bio, /the quiet observer notices small details/);
+  assert.doesNotMatch(bio, /is trying to/);
+});
+
 test('story NPC messages provide a relevant task with a help-or-risk outcome', () => {
   const help = buildNpcStoryTask({ id: 'world-1', worldIndex: 1, storyId: 2, role: 'mentor', goal: 'protect the launch', name: 'Ari Sen' }, { title: 'The last seat', category: 'fashion' }, 7);
   const risk = buildNpcStoryTask({ id: 'world-2', worldIndex: 2, storyId: 2, role: 'friendly rival', goal: 'win the launch', name: 'Mina Park' }, { title: 'The last seat', category: 'fashion' }, 8);
@@ -190,6 +222,14 @@ test('story NPC messages provide a relevant task with a help-or-risk outcome', (
   assert.ok(['help', 'risk'].includes(risk.kind));
   assert.notEqual(help.id, risk.id);
   assert.ok(help.action.length > 0 && risk.action.length > 0);
+});
+
+test('NPC personas vary across the active story cast instead of repeating one voice', () => {
+  const personas = Array.from({ length: 10 }, (_, i) => `persona-${i}`);
+  const storyCount = 200;
+  const storyId = 0;
+  const castPersonas = Array.from({ length: 95 }, (_, slot) => selectNpcPersona(slot * storyCount + storyId, storyId, storyCount, personas));
+  assert.equal(new Set(castPersonas).size, 10);
 });
 
 test('10,000 NPC portraits are unique, deterministic, and generated locally as SVG data URLs', () => {
@@ -210,22 +250,46 @@ test('story cast filtering excludes every NPC and relationship target from other
   assert.deepEqual(filterCastForStory(cast, 60), []);
 });
 
-test('expanded story catalog adds 1,000 distinct story setups with prologues and covers', () => {
+test('launch story catalog contains 200 distinct setups and each has original cover art', () => {
   const base = Array.from({length: 60}, (_, id) => ({id,title:`Base ${id}`,category:'film',summary:`Base summary ${id}`}));
-  const stories = buildStoryCatalog(base, 1000);
-  assert.equal(stories.length, 1060);
-  assert.equal(new Set(stories.map(s=>s.title)).size, 1060);
+  const stories = buildStoryCatalog(base, 140);
+  assert.equal(stories.length, 200);
+  assert.equal(new Set(stories.map(s=>s.title)).size, 200);
+  assert.equal(new Set(stories.map(s=>s.summary)).size, 200);
   assert.ok(stories.slice(60).every(s=>s.prologue?.length > 100));
-  assert.equal(new Set(stories.slice(60).map(s=>s.prologue)).size, 1000);
-  assert.ok(stories.slice(60).every(s=>buildStoryCoverDataUrl(s).startsWith('data:image/svg+xml,')));
+  assert.equal(new Set(stories.slice(60).map(s=>s.prologue)).size, 140);
+  const covers=stories.map(buildStoryCoverDataUrl);
+  assert.ok(covers.every(url=>url.startsWith('data:image/svg+xml,')));
+  assert.equal(new Set(covers).size, 200);
+  const photoCovers=stories.map(buildStoryCoverPhotoUrl);
+  assert.equal(new Set(photoCovers).size,200);
+  assert.ok(photoCovers.every((url,index)=>url.startsWith(`https://picsum.photos/id/${index+1}/`)));
+  const coverMarkup=decodeURIComponent(covers[0].slice('data:image/svg+xml,'.length));
+  assert.match(coverMarkup,/data-art="story-scene"/);
+  assert.match(coverMarkup,/class="story-figure"/);
+  assert.match(coverMarkup,/class="scene-landmark"/);
 });
 
 test('100,000 NPC names and portraits remain unique without loading their records', () => {
-  const first = Array.from({length:100},(_,i)=>`First${i}`), last=Array.from({length:100},(_,i)=>`Last${i}`), middle=Array.from({length:10},(_,i)=>`Middle${i}`);
+  const first = [...Array.from({length:100},(_,i)=>`First${i}`),'First0'], last=[...Array.from({length:100},(_,i)=>`Last${i}`),'Last0'], middle=[...Array.from({length:10},(_,i)=>`Middle${i}`),'Middle0'];
   const names = Array.from({length:100000},(_,i)=>uniqueNpcName(i,first,last,middle));
   assert.equal(new Set(names).size,100000);
   const portraits=[0,1,999,99999].map(i=>buildNpcPortraitDataUrl(i));
   assert.equal(new Set(portraits).size,portraits.length);
+});
+
+test('all 100,000 NPC personality combinations and generated social profiles are distinct and story-local', () => {
+  const axes = Array.from({length:10},(_,i)=>`axis-${i}`);
+  const personalities=Array.from({length:100000},(_,i)=>buildNpcPersonality(i,{values:axes,temperaments:axes,socialStyles:axes,voiceStyles:axes,riskStyles:axes}));
+  assert.equal(new Set(personalities.map(p=>p.key)).size,100000);
+  const story={id:7,title:'The Last Take at Dawn',category:'film',summary:'A film crew faces a deadline.'};
+  const peers=Array.from({length:12},(_,i)=>({id:`peer-${i}`,name:`Peer ${i}`}));
+  const first=buildNpcSocialMoments({id:'npc-1',name:'Avery North',handle:'@avery1',goal:'protect the crew',persona:'a careful producer',voiceStyle:'measured'},story,peers);
+  const second=buildNpcSocialMoments({id:'npc-2',name:'Robin Vale',handle:'@robin2',goal:'finish the cut',persona:'a restless editor',voiceStyle:'dry'},story,peers);
+  assert.deepEqual(first.map(x=>x.type).sort(),['post','post','post','reel','reel','repost','repost','tagged','tagged'].sort());
+  assert.ok(first.every(x=>x.storyId===7&&x.text.includes(story.title)));
+  assert.equal(new Set(first.map(x=>x.id)).size,first.length);
+  assert.notDeepEqual(first.map(x=>x.text),second.map(x=>x.text));
 });
 
 test('rare story cameos are included only in worlds listed on their storyIds', () => {
@@ -241,4 +305,21 @@ test('first follower choices are ten unique story-relevant characters with disti
   assert.equal(new Set(choices.map(x=>x.id)).size,10);
   assert.ok(choices.every(x=>x.storyId===1||x.storyIds?.includes(1)));
   assert.equal(new Set(choices.map(x=>x.relationshipArc)).size,10);
+});
+
+test('first follower choices rotate through different cast members for each story', () => {
+  const cast=Array.from({length:40},(_,i)=>({id:`npc-${i}`,storyId:i<20?1:2,relationshipArc:`arc-${i}`}));
+  const first=selectFirstFollowerCandidates(cast,1,10);
+  const second=selectFirstFollowerCandidates(cast,2,10);
+  assert.notDeepEqual(first.map(x=>x.id),second.map(x=>x.id));
+});
+
+test('flagship story covers illustrate their own premise instead of generic category art', () => {
+  const decode=url=>decodeURIComponent(url.slice('data:image/svg+xml,'.length));
+  const hollywood=decode(buildStoryCoverDataUrl({id:0,title:'Hollywood Hearts',category:'film'}));
+  const city=decode(buildStoryCoverDataUrl({id:1,title:'A city with your name on it',category:'music'}));
+  assert.match(hollywood,/data-scene="red-carpet"/);
+  assert.match(hollywood,/AWARDS PREMIERE/);
+  assert.match(city,/data-scene="city-audience"/);
+  assert.match(city,/YOUR CITY/);
 });
